@@ -3,6 +3,22 @@ import pandas as pd
 import time
 import requests
 from datetime import datetime
+from flask import Flask
+import threading
+import os
+
+# ==========================================
+# 🌐 RENDER KANDIRMA WEB SUNUCUSU (FLASK)
+# ==========================================
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "🤖 Kanka rahat ol, trading botun arkada 7/24 pürüzsüzce çalışıyor!"
+
+def run_web_server():
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
 
 # ==========================================
 # ⚙️ KULLANICI AYARLARI VE AYARLAMALAR
@@ -22,14 +38,11 @@ virtual_wallet = {
 }
 
 TRADE_AMOUNT_USDT = 50.0    
-PROFIT_TARGET_PCT = 0.003   # %0.3 Hızlı test kâr hedefi
+PROFIT_TARGET_PCT = 0.003   
 
-# Şifresiz Canlı Binance Bağlantısı
 exchange = ccxt.binance({'enableRateLimit': True})
-
-# Günlük periyodik rapor saatleri (Sabah, Öğle, Akşam)
 REPORT_HOURS = ["09:00", "14:00", "21:00"]
-last_reported_time = "" # Aynı dakika içinde üst üste mesaj atmasın diye
+last_reported_time = "" 
 
 # ==========================================
 # 💵 CANLI DOLAR/TL KURU ÇEKME FONKSİYONU
@@ -78,7 +91,6 @@ def get_wallet_report():
     total_pnl_usd = total_balance - START_BUDGET
     total_pnl_pct = (total_pnl_usd / START_BUDGET) * 100
 
-    # TL Çevrimleri
     cash_tl = virtual_wallet["USDT"] * usdt_try
     crypto_tl = current_crypto_value * usdt_try
     total_tl = total_balance * usdt_try
@@ -105,23 +117,36 @@ def get_wallet_report():
 # ==========================================
 def check_scheduled_reports():
     global last_reported_time
-    # Şu anki saat ve dakikayı alıyoruz (Örn: "14:00")
     current_time = datetime.now().strftime("%H:%M")
-    
-    # Eğer şu anki saat bizim rapor saatlerimizden biriyse ve o dakika henüz rapor atılmadıysa
     if current_time in REPORT_HOURS and current_time != last_reported_time:
-        print(f"[SİSTEM]: Planlı rapor saati geldi ({current_time}). Rapor gönderiliyor...")
         send_telegram(f"⏰ *Zamanlanmış Durum Raporu ({current_time})*\n\n" + get_wallet_report())
         last_reported_time = current_time
+
+# ==========================================
+# 📈 İNDİKATÖR HESAPLAMA
+# ==========================================
+def calculate_indicators(symbol, timeframe='4h', limit=100):
+    try:
+        bars = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+        df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        
+        delta = df['close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        df['RSI'] = 100 - (100 / (1 + rs))
+        
+        return df.iloc[-1]
+    except:
+        return None
 
 # ==========================================
 # 🔄 SİMÜLASYON MOTORU
 # ==========================================
 def run_simulation_bot():
     global TOTAL_REALIZED_PROFIT
-    print("\n🔄 Bot yeni bir tarama döngüsü başlattı...")
+    print("🔄 Bot piyasayı tarıyor...")
     
-    # 1. Satış Kontrolü
     for symbol in list(virtual_wallet["POSITIONS"].keys()):
         last_data = calculate_indicators(symbol)
         if last_data is None: continue
@@ -143,7 +168,6 @@ def run_simulation_bot():
             
             send_telegram(f"💰 *[Sanal Satış]:* {symbol} %{PROFIT_TARGET_PCT*100} kârla satıldı!\nAlış Maliyeti: {buy_price:.4f} -> Satış Fiyatı: {current_price:.4f}\n🔥 Sadece Bu İşlemden Gelen Kâr: {profit:+.2f} USDT *(~{profit_tl:,.2f} TL)*\n\n" + get_wallet_report())
 
-    # 2. Alış Kontrolü
     for symbol in WATCHLIST:
         if symbol in virtual_wallet["POSITIONS"]: continue
         
@@ -166,39 +190,22 @@ def run_simulation_bot():
                 time.sleep(1)
 
 # ==========================================
-# 📈 İNDİKATÖR HESAPLAMA
-# ==========================================
-def calculate_indicators(symbol, timeframe='4h', limit=100):
-    try:
-        bars = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-        df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        
-        delta = df['close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        rs = gain / loss
-        df['RSI'] = 100 - (100 / (1 + rs))
-        
-        return df.iloc[-1]
-    except Exception as e:
-        print(f"{symbol} indikatör hatası: {e}")
-        return None
-
-# ==========================================
 # 🚀 ANA ÇALIŞTIRICI LOOP
 # ==========================================
 if __name__ == "__main__":
-    send_telegram("🚀 *Otomatik Bildirim Modu Aktif!*\n\n💰 Başlangıç Bakiyesi: 1000 USDT\n🎯 Kâr Hedefi: %0.3\n⏰ Her gün 09:00, 14:00 ve 21:00'de otomatik cüzdan raporu gönderilecektir.\n⚠️ Ücretsiz bulut uyumluluğu için manuel bakiye sorgusu kaldırılmıştır.")
+    # Web Sunucusunu Arka Planda Başlat kanka
+    web_thread = threading.Thread(target=run_web_server)
+    web_thread.daemon = True
+    web_thread.start()
     
+    send_telegram("🚀 *Render Ücretsiz Canlı Mod Aktif!*\n\n💰 Başlangıç Bakiyesi: 1000 USDT\n⏰ Rapor Saatleri: 09:00 - 14:00 - 21:00\n🤖 Bot 7/24 taramaya başladı.")
     send_telegram(get_wallet_report())
     
     loop_timer = 0
     while True:
         try:
-            # Her saniye planlı rapor saati geldi mi diye kontrol et kanka ⏱️
             check_scheduled_reports()
             
-            # Her 30 saniyede bir Binance'i tara
             if loop_timer >= 30:
                 run_simulation_bot()
                 loop_timer = 0
@@ -206,9 +213,5 @@ if __name__ == "__main__":
             time.sleep(1)
             loop_timer += 1
             
-        except KeyboardInterrupt:
-            print("\nBot durduruldu.")
-            break
         except Exception as e:
-            print(f"Genel döngü hatası: {e}")
             time.sleep(10)
